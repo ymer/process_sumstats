@@ -1,0 +1,8 @@
+1. install julia, such as with conda install -c conda-forge julia; conda activate julia
+
+1. julia julia_install.jl # To install the necessary packages
+
+2. (optional) wget https://www.dropbox.com/s/xabjdu6squ6u56r/hapmap3.snps # Download hapmap3 reference
+
+3. julia ProcessSumstats.jl --help # See how to run the program
+

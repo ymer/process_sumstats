@@ -41,16 +41,17 @@ standard_error;Stderr
 z;Z
 zscore;Z
 
-rsid;MarkerName
-rs;MarkerName
-snp;MarkerName
-id;MarkerName
-markername;MarkerName
-snpid;MarkerName
+rsid;Rsid
+rs;Rsid
+snp;Rsid
+id;Rsid
+markername;Rsid
+snpid;Rsid
 
 alleles;Alleles
 allele1;A1
-Allele2;A2
+allele2;A2
+allele0;A2
 ref;A1
 alt;A2
 eff.all;A1
