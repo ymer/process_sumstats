@@ -2,9 +2,14 @@ old;new
 chr;Chr
 chrom;Chr
 #chrom;Chr
+chromosome;Chr
 
 pos;Pos
 bp;Pos
+base_pair_location;Pos
+position;Pos
+
+CHR_BP_hg19b37;SNP
 
 info;Info
 info_ukb;Info
@@ -15,6 +20,7 @@ pval;Pval
 p_value;Pval
 p.value;Pval
 pvalue;Pval
+p-value;Pval
 
 ncon;ncon
 ncas;ncas
@@ -30,6 +36,9 @@ nmax;nmax
 beta;Effect
 effect;Effect
 or;Effect
+effect_a1;Effect
+effect_beta;Effect
+beta1;Effect
 
 neg_log_pvalue;NeglogPval
 
@@ -45,8 +54,8 @@ rsid;Rsid
 rs;Rsid
 snp;Rsid
 id;Rsid
-markername;Rsid
 snpid;Rsid
+rsnumbers;Rsid
 
 alleles;Alleles
 allele1;A1
@@ -58,4 +67,7 @@ eff.all;A1
 other.all;A2
 effect_allele;A1
 other_allele;A2
+non_effect_allele;A2
+
+markername;MarkerName
 

@@ -16,6 +16,9 @@ end
 Base.show(io::IO, p::Percent) = print(io, @sprintf("%.1f%%", p.value * 100))
 
 
+static2(f, arg) = x -> (f(x, arg); x)
+static(f) = x -> (f(x); x)
+
 
 function print_header(df, title = "")
     pretty_table(
