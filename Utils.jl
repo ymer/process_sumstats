@@ -16,16 +16,24 @@ end
 Base.show(io::IO, p::Percent) = print(io, @sprintf("%.1f%%", p.value * 100))
 
 
-static2(f, arg) = x -> (f(x, arg); x)
-static(f) = x -> (f(x); x)
+function static(f, arg=nothing)
+    return x -> begin
+        if arg === nothing
+            f(x)
+        else
+            f(x, arg)
+        end
+        x
+    end
+end
 
 
 function print_header(df, title = "")
     pretty_table(
-        df,
+        first(df, 3),
         header_crayon = crayon"yellow bold",
         title = title,
-        display_size = (13, 300),
+        #display_size = (13, 300),
         show_omitted_cell_summary = false
         )
 end
@@ -48,4 +56,5 @@ function get_time()::Duration
 
     return Duration("$(minutes):$(lpad(seconds, 2, "0"))")
 end
+
 
