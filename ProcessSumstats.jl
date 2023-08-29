@@ -1,9 +1,28 @@
-using ArgParse, CSV, DataFrames, Logging, LoggingExtras, Distributions, CodecZlib
+using ArgParse, CSV, DataFrames, Logging, LoggingExtras, Distributions, CodecZlib, Formatting
 
 include("Utils.jl"); include("NameChanges.jl")
 
+
+macro log(msg, df)
+    return quote
+        formatted_snps = format(nrow($(esc(df))), commas = true)
+        @info $(esc(msg)) * "\nSNPs: " * formatted_snps * "\ntime: " * string(get_time())
+    end
+end
+
+
 function parse_commandline()
-    s = ArgParseSettings()
+    s = ArgParseSettings(
+            description = "This program is used to process gwas sumstat files in various formats to a uniform format.",
+            epilog = 
+        "The ID of a SNP can be in two formats, called 'SNP' and 'Rsid'. SNP is in the form of chr:position, while Rsid is a rs-number. Examples:\n
+        'SNP': 10:157346\n
+        'Rsid': rs162373\n
+        \n
+        A .bim file is a file in the plink .bim format. It has the following unlabelled columns: Chr, SNP/Rsid, GPos, Pos, A1, A2\n
+        \n
+        A .snpid file is a custom file format. It has the following labelled columns: SNP, Rsid, A1, A2."
+       )
 
     @add_arg_table! s begin
         "--in"
@@ -15,31 +34,32 @@ function parse_commandline()
             arg_type = String 
             required = true
         "--info-min"
-            help = "Minimum Info threshold"
+            help = "Minimum Info thresholdi"
             default = 0.9
             arg_type = Real
         "--keep-biallelic"
             help = "Non-biallelic SNPS are removed by default. Use this option to keep them in."
             action = :store_true
+        "--filter"
+            help = "Path(s) to one or more .bim / .snpid files (separated by comma). Keep only variants that are present here."
+            #arg_type = String
+            default = ""
+        "--write-snpid"
+            help = "Write a .snpid file"
+            action = :store_true
         "--check-build"
-            help = "Path to a file with Rsid and SNP location.
-                    Used to check if the sumstats file SNP locations are in the same build."
+            help = "Path to a .snpid file. Used to check if the sumstats file SNP positions are in the same build."
             default = ""
             arg_type = String
-        "--filter-reference"
-            help = "Path to a plink .bim file.
-                    Keep only variants that are present in this file."
+        "--pos-from-snpid"
+            help = "Path to a .snpid file. Used to find the SNP position if the sumstat file only has Rsid."
             default = ""
-            arg_type = String
         "--head"
             help = "Read only the first n columns"
             default = -1
             arg_type = Int64
         "--convert-to-tabs"
             help = "Convert spaces in file to tabs"
-            action = :store_true
-        "--write-snplist"
-            help = "Write a list of the SNPs to a file"
             action = :store_true
     end
 
@@ -84,7 +104,7 @@ function read_sumstats(file_name::String)
 
         contents = replace(contents, " " => "\t")
         write(new_filename, contents)
-        @info "Spaces converted to tabs."
+        @info "Spaces converted to tabs"
     end
      
     if args["convert-to-tabs"]
@@ -109,7 +129,7 @@ function read_sumstats(file_name::String)
 
     df = df |> rename_columns
 
-    @info "Sumstats read." SNPs = nrow(df) time = get_time()
+    @log "Sumstats read" df
 
     df
 end
@@ -139,16 +159,15 @@ function filter_info(df)
         print_sample(invalid_df, [:SNP, :Rsid, :Info], "Invalid Info values")
     end
 
-    original_size = size(df, 1)
     filter!(row -> row[:Info] >= info_min, df)
-    num_removed = original_size - size(df, 1)
-    @info "Remove SNPs with Info < $info_min." "SNPs removed" = num_removed SNPs = nrow(df) time = get_time()
+    @log "Remove SNPs with Info < $info_min." df
 
     df
 end
 
 
 function create_SNP(df)
+    args["pos-from-snpid"] != "" && return df
     if :SNP ∉ df
         if :Chr in df && :Pos in df
             df = transform(df, [:Chr, :Pos] => ByRow((Chr, Pos) -> "$Chr:$Pos") => :SNP)
@@ -161,51 +180,71 @@ function create_SNP(df)
 end
 
 
+function pos_from_snpid(df)
+    fn = args["pos-from-snpid"]
+    fn == "" && return df
+    
+    snpid = CSV.File(fn) |> DataFrame
+    merged = innerjoin(df, snpid, on = [:Rsid, :A1, :A2])
+
+    @log "SNP position acquired from reference. " * "Reference file = $fn" merged
+    
+    merged
+end
+
+
 function check_build(df)
 
     if args["check-build"] == ""
-        @info "SNP locations not checked. Could be from unknown build."
+        @info "SNP positions not checked. Could be from unknown build."
         return(df)
     end
 
     @assert :Rsid ∈ df "Rsid must be in dataframe to check with reference."
     @assert :SNP ∈ df "SNP must be in dataframe to check with reference."
 
-    ref = CSV.File(args["check-build"]) |> DataFrame
-    rename!(df, names(df)[2] => :SNP_ref, names(df)[1] => :Rsid)
+    snpid = CSV.File(args["check-build"]) |> DataFrame
+    rename!(snpid, :SNP => :SNP_ref)
+
     original_size = size(df, 1)
-    merged = innerjoin(df, select(ref, [:Rsid, :SNP_ref]), on = :Rsid)
+    merged = innerjoin(df, select(snpid, [:SNP_ref, :Rsid]), on = :Rsid, matchmissing = :notequal)
     new_size = size(merged, 1)
 
-    @info "Build check:" "SNPs found in reference" = Percent(new_size / original_size) time = get_time()
+    @info "Build check" "SNPs found in reference" = Percent(new_size / original_size) time = get_time()
     
-    @assert :SNP ∈ merged && :SNP_ref ∈ merged "SNP and SNP_ref must be present in DataFrame to check with reference"
     not_equal_df = merged[merged.SNP .!= merged.SNP_ref, :]
     if nrow(not_equal_df) > 0
-        @warn "Not all SNPs matched with reference" "SNPs not matched" = nrow(not_equal_df)
+        @warn "Not all SNP positions matched with reference" "SNPs not matched" = nrow(not_equal_df)
         cols_to_select = intersect([:SNP, :SNP_ref, :Rsid], propertynames(not_equal_df))
         selected_df = select(not_equal_df, cols_to_select)
         print_header(selected_df, "SNPs not matching reference")
     else
-        @info "All SNP locations match the reference."
+        @info "All SNP positions match the reference."
     end
 end
 
 
-function filter_reference(df)
-    fn = args["filter-reference"]
+function filter_ids(df)
+    args["filter"] == "" && return df
 
-    fn == "" && return df
+    for fn in split(args["filter"], ',')
+        ext = splitext(fn)[2]
+        if ext == ".bim"
+            ref = CSV.File(fn, header=["Chr", "Rsid", "GPos", "Pos", "A1", "A2"]) |> DataFrame
+            ref[!, "SNP"] = string.(ref[!, "Chr"]) .* ":" .* string.(ref[!, "Pos"])
+        elseif ext == ".snpid"
+            ref = CSV.File(fn) |> DataFrame
+        else
+            @error "Unsupported file extension" ext
+            return df
+        end
+
+        df = innerjoin(df, select(ref, [:SNP, :A1, :A2]), on = [:SNP, :A1, :A2])
+
+        @log "Filtered with $fn" df
+    end
     
-    ref = CSV.File(fn, header = ["Chr", "SNP", "GPos", "Pos", "A1", "A2"]) |> DataFrame
-
-    original_size = size(df, 1)
-    merged = innerjoin(df, select(ref, [:SNP, :A1, :A2]), on = [:SNP, :A1, :A2])
-    new_size = size(merged, 1)
-
-    @info "Filtered with reference." "Reference file" = fn "SNPs removed" = original_size - new_size SNPs = new_size time = get_time()
-    
-    merged
+    df
 end
 
 
@@ -227,19 +266,14 @@ function filter_alleles(df)
     df.A1 = uppercase.(df.A1)
     df.A2 = uppercase.(df.A2)
     
-    original_size = size(df, 1)
     pairs = [("A", "T"), ("T", "A"), ("G", "C"), ("C", "G")]
     filter!(row -> !any([row[:A1] == p[1] && row[:A2] == p[2] for p in pairs]), df)
-    num_removed = original_size - size(df, 1)
 
-    @info "Removing ambiguous alleles (A/T and G/C)." "SNPs removed" = num_removed SNPs = (size(df, 1)) time = get_time()
+    @log "Removing ambiguous alleles (A/T and G/C)" df
 
     if !(args["keep-biallelic"])
-        original_size = nrow(df)
         df = filter(row -> row.A1 in ["A", "T", "G", "C"] && row.A2 in ["A", "T", "G", "C"], df)
-        new_size = nrow(df)
-        num_removed = original_size - new_size
-        @info "Removing non-biallelic SNPs." "SNPs removed" = num_removed SNPs = new_size time = get_time()
+        @log "Removing non-biallelic SNPs" df
     end
 
     df  
@@ -247,12 +281,12 @@ end
 
 
 function remove_duplicates(df)
-    original_size = nrow(df)
     unique!(df, :Rsid)
-    num_removed = original_size - nrow(df)
-    @info "Removing duplicate markers." "SNPs removed" = num_removed SNPs = nrow(df) time=get_time()
+    unique!(df, :SNP)
+    @log "Removing duplicate markers" df
     df
 end
+
 
 function identify_effect(df)
     if :Effect ∉ df
@@ -263,27 +297,22 @@ function identify_effect(df)
 
     m = median(df.Effect)
     if abs(m) < 0.3
-    rename!(df, :Effect => :Beta)
+        rename!(df, :Effect => :Beta)
         @info "Effect is Beta"
-        if :Stderr ∈ df
-            df.Z = df.Beta ./ df.Stderr
-            @info "Z calculated from Beta and Stderr" time = get_time()
-        else
-            @warn "As Stderr is missing, Z can not be calculated"
-        end
     elseif m > 0.7 && m < 1.3
         rename!(df, :Effect => :OR)
         df.Beta = log.(df.OR)
         @info "Effect is OR. Beta calculated." time = get_time()
-        
-        if :Stderr ∈ df
-            df.Z = df.Beta ./ df.Stderr
-            @info "Z calculated from Beta and Stderr" time = get_time()
-        else
-            @warn "As Stderr is missing, Z can not be calculated"
-        end
     else
-        @error "Effect column has unusual values. Check data."
+        error("Effect column has unusual values. Check data.")
+    end
+    
+    if :Stderr ∈ df
+        df.Z = df.Beta ./ df.Stderr
+        @info "Z calculated from Beta and Stderr" time = get_time()
+    else
+        df.Direction = ifelse.(df.Beta .> 0, 1, -1)
+        @warn "As Stderr is missing, Z can not be calculated. Direction calculated from Beta."
     end
 
     df
@@ -291,22 +320,20 @@ end
 
 
 function drop_missing(df)
-    n_old = nrow(df)
-    df = dropmissing(df, [:A1, :A2, :Effect])
-    n_new = nrow(df)
-    @info "Drop rows with missing values." "SNPs removed" = n_new - n_old SNPs = n_new time = get_time()
+    df = dropmissing(df, [:SNP, :Rsid, :A1, :A2, :Effect])
+    @log "Drop rows with missing values" df
     df
 end
 
 
 function calculate_statistics(df)
-    if :NeglogPval in propertynames(df) && !(:Pval in propertynames(df))
-        df = transform(df, :NeglogPval => (x -> 10 .^ -x) => :Pval)
-        @info "Pval calculated from NeglogPval." time = get_time()
+    if :NeglogP in propertynames(df) && !(:P in propertynames(df))
+        df = transform(df, :NeglogP => (x -> 10 .^ -x) => :P)
+        @info "P calculated from NeglogP." time = get_time()
     end
     
-    if :Pval ∈ df
-        df = transform(df, :Pval => (Pval -> sqrt.(quantile.(Chisq(1), 1 .- Pval))) => :Zp)
+    if :P ∈ df
+        df = transform(df, :P => (P -> sqrt.(quantile.(Chisq(1), 1 .- P))) => :Zp)
     end
 
     if :ndiv2 ∈ df && :n ∉ df
@@ -328,14 +355,14 @@ function calculate_statistics(df)
 end
 
 function filter_statistics(df)
-    if :Pval ∈ df
+    if :P ∈ df
         original_size = nrow(df)
-        invalid_rows = filter(row -> row[:Pval] < 0 || row[:Pval] > 1, df)
-        filter!(row -> 0 <= row[:Pval] <= 1, df)
+        invalid_rows = filter(row -> row[:P] < 0 || row[:P] > 1, df)
+        filter!(row -> 0 <= row[:P] <= 1, df)
         num_removed = original_size - nrow(df)
         if num_removed > 0
             @warn "Impossible p values detected." "SNPs removed" = num_removed SNPs = nrow(df) time = get_time()
-            cols_to_select = intersect([:SNP, :Rsid, :Pval], propertynames(large_diff_df))
+            cols_to_select = intersect([:SNP, :Rsid, :P], propertynames(large_diff_df))
             selected_df = select(large_diff_df, cols_to_select)
             print_header(selected_df, "Invalid p-values")
         end
@@ -348,7 +375,7 @@ function filter_statistics(df)
         num_large_diff = sum(large_diff_rows)
         if num_large_diff > 0
             @warn "$num_large_diff rows have more than 0.1 difference between |Zp| and |Z|."
-            cols_to_select = intersect([:SNP, :Rsid, :Pval, :OR, :Beta, :OR, :Z, :Zp], propertynames(large_diff_df))
+            cols_to_select = intersect([:SNP, :Rsid, :P, :OR, :Beta, :OR, :Z, :Zp], propertynames(large_diff_df))
             selected_df = select(large_diff_df, cols_to_select)
             print_header(selected_df, "Large diff between Pz and Z")
         end        
@@ -359,7 +386,7 @@ end
 
 
 function select_cols(df)
-    missing_columns = setdiff([:SNP, :n, :A1, :A2, :Rsid], propertynames(df))
+    missing_columns = setdiff([:SNP, :n, :A1, :A2], propertynames(df))
 
     if !isempty(missing_columns)
         missing_columns_str = join(missing_columns, ", ")
@@ -376,14 +403,14 @@ function select_cols(df)
         end
     end
 
-    select(df, intersect([:SNP, :SNP_ref, :Rsid, :A1, :A2, :Stat, :P, :OR, :Beta, :Z, :n], propertynames(df)))
+    select(df, intersect([:SNP, :SNP_ref, :Rsid, :A1, :A2, :Stat, :P, :OR, :Beta, :Z, :Direction, :n], propertynames(df)))
 end
 
 
 function write_output(df)
     fn = basename(args["in"])
-    if args["write-snplist"] != ""
-        CSV.write(joinpath(args["outdir"], fn * ".snplist"), df[:, [:SNP]])
+    if args["write-snpid"] != ""
+        CSV.write(joinpath(args["outdir"], fn * ".snpid"), df[:, [:SNP, :Rsid, :A1, :A2]], delim = "\t")
     end
     CSV.write(joinpath(args["outdir"], fn), df, delim = "\t")
 end
@@ -399,9 +426,7 @@ end
 
 
 function print_sample(df, cols, title)
-    cols_to_select = intersect(cols, propertynames(df))
-    selected_df = select(df, cols_to_select)
-    print_header(selected_df, title)
+    print_header(select(df, intersect(cols, propertynames(df))), title)
 end
  
 
@@ -416,10 +441,11 @@ function main()
         static(check_data_types) |>
         filter_info |>
         create_SNP |>
+        pos_from_snpid |>
         static(check_build) |>
         split_alleles |>
         filter_alleles |>
-        filter_reference |>
+        filter_ids |>
         remove_duplicates |>
         drop_missing |>
         identify_effect |>
@@ -429,7 +455,7 @@ function main()
         static(write_output) |>
         static(print_header, "After processing")
 
-    @info "Program finished." time = get_time()
+    @info "Program finished" time = get_time()
 end
 
 main()
