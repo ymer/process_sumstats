@@ -38,6 +38,7 @@ replacements = Dict(
     "beta1" => "Effect",
     "logodds" => "Effect",
     "neg_log_pvalue" => "NeglogP",
+    "neglogp" => "NeglogP",
     "se" => "Stderr",
     "stderr" => "Stderr",
     "stderr_beta" => "Stderr",

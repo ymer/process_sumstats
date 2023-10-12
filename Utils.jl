@@ -29,12 +29,33 @@ end
 
 
 function print_header(df, title = "")
+    # Render the table first
+    pretty_table(first(df, 4), header_crayon = crayon"yellow bold", title = title, show_omitted_cell_summary = true)
+
+    # Calculate the width needed for each column
+    col_widths = [length(string(col)) for col in names(df)]
+
+    # Calculate the total width needed (sum of column widths + some extra for spacing)
+    total_width = sum(col_widths) + length(names(df)) * 3
+
+    # Get the terminal width
+    term_width = displaysize(stdout)[2]
+
+    # Check if the table will fit
+    if total_width > term_width
+        println("The table does not fit the screen. Column names are:")
+        println(names(df))
+    end
+end
+
+
+function print_header2(df, title = "")
     pretty_table(
-        first(df, 3),
+        first(df, 4),
         header_crayon = crayon"yellow bold",
         title = title,
         #display_size = (13, 300),
-        show_omitted_cell_summary = false
+        show_omitted_cell_summary = true
         )
 end
 

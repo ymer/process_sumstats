@@ -34,7 +34,7 @@ function parse_commandline()
             arg_type = String 
             required = true
         "--info-min"
-            help = "Minimum Info thresholdi"
+            help = "Minimum Info threshold"
             default = 0.9
             arg_type = Real
         "--keep-biallelic"
@@ -61,6 +61,9 @@ function parse_commandline()
         "--convert-to-tabs"
             help = "Convert spaces in file to tabs"
             action = :store_true
+        "--convert-to-dot"
+            help = "Convert commas in numerical columns to dots"
+            action = :store_true
     end
 
     return parse_args(s)
@@ -71,7 +74,17 @@ function read_sumstats(file_name::String)
     function rename_columns(df)
         old_names = names(df)
         new_names = [get(replacements, lowercase(string(name)), string(name)) for name in old_names]
-        pairs = Pair.(old_names, Symbol.(new_names))
+        unique_new_names = Symbol[]
+        seen = Dict{Symbol, Int}()
+
+        for name in new_names
+            count = get!(seen, Symbol(name), 0)
+            seen[Symbol(name)] += 1
+            unique_name = count == 0 ? Symbol(name) : Symbol("$(name)_$(count)")
+            push!(unique_new_names, unique_name)
+        end
+
+        pairs = Pair.(old_names, unique_new_names)
         rename!(df, pairs)
 
         if :Rsid ∈ df && :MarkerName ∈ df && :SNP ∉ df
@@ -116,18 +129,40 @@ function read_sumstats(file_name::String)
     n = args["head"]
     if n != -1
         @info "Only first $n rows read from sumstats file"
-        df = CSV.File(file_name, limit = n, missingstring = ["NA", "N/A"]) |> DataFrame
+        df = CSV.File(file_name, limit = n, missingstring = ["NA", "N/A", "."]) |> DataFrame
     else
-        df = CSV.File(file_name, missingstring = ["NA", "N/A"]) |> DataFrame
+        df = CSV.File(file_name, missingstring = ["NA", "N/A", "."]) |> DataFrame
     end
-    
+   
+    if args["convert-to-dot"]
+        for col in names(df)
+            if any(x -> occursin(",", string(x)), df[!, col])
+                df[!, col] = parse.(Float64, replace.(string.(df[!, col]), "," => "."))
+            end
+        end
+    end
+    println(names(df))
+     
+    for col in names(df)
+        if all(ismissing, df[!, col])
+            select!(df, Not(col))
+        end
+    end
+ 
     if size(df, 2) < 3
         new_filename = file_name * "_tabs"
         convert_spaces_to_tabs(file_name, new_filename)
         df = read_sumstats(new_filename)
     end
-
+    
     df = df |> rename_columns
+    
+    numcols = [:Info, :P, :Effect, :Stderr]
+    for col in intersect(numcols, names(df))
+        if df[!, col] isa AbstractVector{<:AbstractString} && any(occursin(",", x) for x in df[!, col])
+            df[!, col] = parse.(Float64, replace.(df[!, col], "," => "."))
+        end
+    end
 
     @log "Sumstats read" df
 
@@ -153,9 +188,9 @@ function filter_info(df)
         return(df)
     end
 
-    invalid_df = filter(row -> row[:Info] < 0 || row[:Info] > 1.02, df)
+    invalid_df = filter(row -> row[:Info] < 0 || row[:Info] > 1.05, df)
     if nrow(invalid_df) > 0
-        @warn "$(nrow(invalid_df)) of rows with Info values outside the range [0, 1.02]"
+        @warn "$(nrow(invalid_df)) of rows with Info values outside the range [0, 1.05]"
         print_sample(invalid_df, [:SNP, :Rsid, :Info], "Invalid Info values")
     end
 
@@ -281,8 +316,8 @@ end
 
 
 function remove_duplicates(df)
-    unique!(df, :Rsid)
-    unique!(df, :SNP)
+    :Rsid in df && unique!(df, :Rsid)
+    :SNP in df && unique!(df, :SNP)
     @log "Removing duplicate markers" df
     df
 end
@@ -290,8 +325,11 @@ end
 
 function identify_effect(df)
     if :Effect ∉ df
-        @assert :Z ∈ df "Neither effect nor Z found"
-        @info "No Effect column, but Z is present"
+        if :Z in df
+            @info "No Effect column, but Z is present"
+        else
+            @warn "Neither effect nor Z found"
+        end
         return(df)
     end
 
@@ -320,7 +358,8 @@ end
 
 
 function drop_missing(df)
-    df = dropmissing(df, [:SNP, :Rsid, :A1, :A2, :Effect])
+    cols_to_check = Symbol.(intersect(string.([:SNP, :Rsid, :A1, :A2, :Effect]), string.(names(df))))
+    df = dropmissing(df, cols_to_check)
     @log "Drop rows with missing values" df
     df
 end
@@ -332,10 +371,6 @@ function calculate_statistics(df)
         @info "P calculated from NeglogP." time = get_time()
     end
     
-    if :P ∈ df
-        df = transform(df, :P => (P -> sqrt.(quantile.(Chisq(1), 1 .- P))) => :Zp)
-    end
-
     if :ndiv2 ∈ df && :n ∉ df
         df.n = df.ndiv2 .* 2
         @info "N calculated from ndiv2" time = get_time()
@@ -368,19 +403,6 @@ function filter_statistics(df)
         end
     end
 
-    if :Zp ∈ df && :Z ∈ df
-        diff = (abs.(df.Zp) .- abs.(df.Z))
-        large_diff_rows = diff .> 0.1
-        large_diff_df = df[large_diff_rows, :]
-        num_large_diff = sum(large_diff_rows)
-        if num_large_diff > 0
-            @warn "$num_large_diff rows have more than 0.1 difference between |Zp| and |Z|."
-            cols_to_select = intersect([:SNP, :Rsid, :P, :OR, :Beta, :OR, :Z, :Zp], propertynames(large_diff_df))
-            selected_df = select(large_diff_df, cols_to_select)
-            print_header(selected_df, "Large diff between Pz and Z")
-        end        
-    end
-
     df
 end
 
@@ -409,10 +431,12 @@ end
 
 function write_output(df)
     fn = basename(args["in"])
-    if args["write-snpid"] != ""
+    if args["write-snpid"]
         CSV.write(joinpath(args["outdir"], fn * ".snpid"), df[:, [:SNP, :Rsid, :A1, :A2]], delim = "\t")
     end
     CSV.write(joinpath(args["outdir"], fn), df, delim = "\t")
+
+    @info "Write formatted sumstat file" time = get_time()
 end
 
 
