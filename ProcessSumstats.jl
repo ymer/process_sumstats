@@ -3,14 +3,6 @@ using ArgParse, CSV, DataFrames, Logging, LoggingExtras, Distributions, CodecZli
 include("Utils.jl"); include("NameChanges.jl")
 
 
-macro log(msg, df)
-    return quote
-        formatted_snps = format(nrow($(esc(df))), commas = true)
-        @info $(esc(msg)) * "\nSNPs: " * formatted_snps * "\ntime: " * string(get_time())
-    end
-end
-
-
 function parse_commandline()
     s = ArgParseSettings(
             description = "This program is used to process gwas sumstat files in various formats to a uniform format.",
@@ -29,8 +21,8 @@ function parse_commandline()
             help = "Input sumstats filename"
             arg_type = String
             required = true
-        "--outdir"
-            help = "Output directory"
+        "--out"
+            help = "Output filename"
             arg_type = String 
             required = true
         "--info-min"
@@ -42,18 +34,21 @@ function parse_commandline()
             action = :store_true
         "--filter"
             help = "Path(s) to one or more .bim / .snpid files (separated by comma). Keep only variants that are present here."
-            #arg_type = String
+            arg_type = String
             default = ""
         "--write-snpid"
             help = "Write a .snpid file"
             action = :store_true
-        "--check-build"
-            help = "Path to a .snpid file. Used to check if the sumstats file SNP positions are in the same build."
+        "--check-with-ref"
+            help = "Check if the positions are the same as in the reference. (Requires --ref.)"
+            action = :store_true
+        "--pos-from-ref"
+            help = "Match on Rsid, and use the position from the reference instead. (Requires --ref.)"
+            action = :store_true
+        "--ref"
+            help = "Path to a reference .bim file."
             default = ""
             arg_type = String
-        "--pos-from-snpid"
-            help = "Path to a .snpid file. Used to find the SNP position if the sumstat file only has Rsid."
-            default = ""
         "--head"
             help = "Read only the first n columns"
             default = -1
@@ -64,6 +59,10 @@ function parse_commandline()
         "--convert-to-dot"
             help = "Convert commas in numerical columns to dots"
             action = :store_true
+        "--assign-n"
+            help = "Assign an n value"
+            default = -1
+            arg_type = Int64
     end
 
     return parse_args(s)
@@ -131,8 +130,13 @@ function read_sumstats(file_name::String)
         @info "Only first $n rows read from sumstats file"
         df = CSV.File(file_name, limit = n, missingstring = ["NA", "N/A", "."]) |> DataFrame
     else
-        df = CSV.File(file_name, missingstring = ["NA", "N/A", "."]) |> DataFrame
+        if args["convert-to-dot"]
+            df = CSV.File(file_name, missingstring = ["NA", "N/A", ".", ""], decimal = ',') |> DataFrame
+        else
+            df = CSV.File(file_name, missingstring = ["NA", "N/A", ".", ""]) |> DataFrame
+        end
     end
+
    
     if args["convert-to-dot"]
         for col in names(df)
@@ -141,7 +145,6 @@ function read_sumstats(file_name::String)
             end
         end
     end
-    println(names(df))
      
     for col in names(df)
         if all(ismissing, df[!, col])
@@ -164,7 +167,8 @@ function read_sumstats(file_name::String)
         end
     end
 
-    @log "Sumstats read" df
+    @log "Sumstats read" file_name df now()
+    global initial_snps = nrow(df)
 
     df
 end
@@ -185,7 +189,7 @@ function filter_info(df)
     info_min = args["info-min"]
     if :Info ∉ df
         @info "No Info column found in file"
-        return(df)
+        return df
     end
 
     invalid_df = filter(row -> row[:Info] < 0 || row[:Info] > 1.05, df)
@@ -202,7 +206,7 @@ end
 
 
 function create_SNP(df)
-    args["pos-from-snpid"] != "" && return df
+    args["pos-from-ref"] != "" && return df
     if :SNP ∉ df
         if :Chr in df && :Pos in df
             df = transform(df, [:Chr, :Pos] => ByRow((Chr, Pos) -> "$Chr:$Pos") => :SNP)
@@ -228,24 +232,45 @@ function pos_from_snpid(df)
 end
 
 
-function check_build(df)
+function read_bim(fn) 
+    bim = CSV.File(fn, header=["Chr", "Rsid", "GPos", "Pos", "A1", "A2"]) |> DataFrame
+    if all(occursin(":", x) for x in bim[1:5, "Rsid"])
+        rename!(bim, "Rsid" => "SNP")
+    else      
+        bim[!, "SNP"] = string.(bim[!, "Chr"]) .* ":" .* string.(bim[!, "Pos"])
+    end
 
-    if args["check-build"] == ""
+    bim
+end
+
+function use_ref(df)
+
+    if !args["check-with-ref"] & !args["pos-from-ref"]
         @info "SNP positions not checked. Could be from unknown build."
-        return(df)
+        return df
+    end
+
+    fn = args["ref"]
+    snpid = read_bim(fn)
+    @log "Reference read" fn snpid now()
+
+    if args["pos-from-ref"]
+        df = :SNP in names(df) ? select(df, Not(:SNP)) : df
+        merged = innerjoin(df, select(snpid, [:SNP, :Rsid]), on = :Rsid, matchmissing = :notequal)
+        @log "SNP position changed to those from reference" merged
+        return merged
     end
 
     @assert :Rsid ∈ df "Rsid must be in dataframe to check with reference."
     @assert :SNP ∈ df "SNP must be in dataframe to check with reference."
 
-    snpid = CSV.File(args["check-build"]) |> DataFrame
     rename!(snpid, :SNP => :SNP_ref)
 
     original_size = size(df, 1)
     merged = innerjoin(df, select(snpid, [:SNP_ref, :Rsid]), on = :Rsid, matchmissing = :notequal)
     new_size = size(merged, 1)
-
-    @info "Build check" "SNPs found in reference" = Percent(new_size / original_size) time = get_time()
+   
+    @info "Build check" "SNPs found in reference" = Percent(new_size / original_size)
     
     not_equal_df = merged[merged.SNP .!= merged.SNP_ref, :]
     if nrow(not_equal_df) > 0
@@ -256,6 +281,8 @@ function check_build(df)
     else
         @info "All SNP positions match the reference."
     end
+
+    df
 end
 
 
@@ -263,20 +290,21 @@ function filter_ids(df)
     args["filter"] == "" && return df
 
     for fn in split(args["filter"], ',')
+        t = time()
         ext = splitext(fn)[2]
         if ext == ".bim"
-            ref = CSV.File(fn, header=["Chr", "Rsid", "GPos", "Pos", "A1", "A2"]) |> DataFrame
-            ref[!, "SNP"] = string.(ref[!, "Chr"]) .* ":" .* string.(ref[!, "Pos"])
+            filter = read_bim(fn)
         elseif ext == ".snpid"
-            ref = CSV.File(fn) |> DataFrame
+            filter = CSV.File(fn) |> DataFrame
         else
             @error "Unsupported file extension" ext
             return df
         end
 
-        df = innerjoin(df, select(ref, [:SNP, :A1, :A2]), on = [:SNP, :A1, :A2])
+        @log "Filter list read" fn filter now()
 
-        @log "Filtered with $fn" df
+        df = innerjoin(df, select(filter, [:SNP, :A1, :A2]), on = [:SNP, :A1, :A2])
+        @log "Perform filtering" df
     end
     
     df
@@ -289,7 +317,7 @@ function split_alleles(df)
         alleles_split = split.(df.Alleles, '/')
         df.A1 = first.(alleles_split)
         df.A2 = last.(alleles_split)
-        @info "A1 and A2 created from Alleles column." time = get_time()
+        @info "A1 and A2 created from Alleles column."
     end
     df
 end
@@ -330,7 +358,7 @@ function identify_effect(df)
         else
             @warn "Neither effect nor Z found"
         end
-        return(df)
+        return df
     end
 
     m = median(df.Effect)
@@ -340,14 +368,14 @@ function identify_effect(df)
     elseif m > 0.7 && m < 1.3
         rename!(df, :Effect => :OR)
         df.Beta = log.(df.OR)
-        @info "Effect is OR. Beta calculated." time = get_time()
+        @info "Effect is OR. Beta calculated."
     else
         error("Effect column has unusual values. Check data.")
     end
     
     if :Stderr ∈ df
         df.Z = df.Beta ./ df.Stderr
-        @info "Z calculated from Beta and Stderr" time = get_time()
+        @info "Z calculated from Beta and Stderr"
     else
         df.Direction = ifelse.(df.Beta .> 0, 1, -1)
         @warn "As Stderr is missing, Z can not be calculated. Direction calculated from Beta."
@@ -368,12 +396,12 @@ end
 function calculate_statistics(df)
     if :NeglogP in propertynames(df) && !(:P in propertynames(df))
         df = transform(df, :NeglogP => (x -> 10 .^ -x) => :P)
-        @info "P calculated from NeglogP." time = get_time()
+        @info "P calculated from NeglogP."
     end
     
     if :ndiv2 ∈ df && :n ∉ df
         df.n = df.ndiv2 .* 2
-        @info "N calculated from ndiv2" time = get_time()
+        @info "N calculated from ndiv2"
     end
 
     if :n ∉ df && :neff ∈ df
@@ -396,13 +424,29 @@ function filter_statistics(df)
         filter!(row -> 0 <= row[:P] <= 1, df)
         num_removed = original_size - nrow(df)
         if num_removed > 0
-            @warn "Impossible p values detected." "SNPs removed" = num_removed SNPs = nrow(df) time = get_time()
+            @warn "Impossible p values detected." "SNPs removed" = num_removed SNPs = nrow(df)
             cols_to_select = intersect([:SNP, :Rsid, :P], propertynames(large_diff_df))
+            println("h4")
             selected_df = select(large_diff_df, cols_to_select)
             print_header(selected_df, "Invalid p-values")
         end
     end
 
+    df
+end
+
+
+function assign_n(df)
+    n = args["assign-n"]
+    if n != -1
+        if :n in df
+            @warn "assign-n selected, but n is already present. Ignored"
+            return df
+        end
+        df.n = fill(n, size(df, 1))
+    end
+
+    println("h3")
     df
 end
 
@@ -430,13 +474,10 @@ end
 
 
 function write_output(df)
-    fn = basename(args["in"])
-    if args["write-snpid"]
-        CSV.write(joinpath(args["outdir"], fn * ".snpid"), df[:, [:SNP, :Rsid, :A1, :A2]], delim = "\t")
-    end
-    CSV.write(joinpath(args["outdir"], fn), df, delim = "\t")
+    args["write-snpid"] && CSV.write(args["out"] * ".snpid", df[:, [:SNP, :Rsid, :A1, :A2]], delim = "\t")
+    CSV.write(args["out"]  * ".sumstats", df, delim = "\t")
 
-    @info "Write formatted sumstat file" time = get_time()
+    @info "Write formatted sumstat file"
 end
 
 
@@ -456,17 +497,16 @@ end
 
 function main()
     global args = parse_commandline()
-    create_logger(joinpath(args["outdir"], basename(args["in"]) * ".log"))
+    create_logger(args["out"] * ".log")
 
-    @info "Program started"
+    @info "\n=========================== Program started ===========================\n\n"
 
     df = read_sumstats(args["in"]) |>
         static(print_header, "Original data") |>
         static(check_data_types) |>
         filter_info |>
         create_SNP |>
-        pos_from_snpid |>
-        static(check_build) |>
+        use_ref |>
         split_alleles |>
         filter_alleles |>
         filter_ids |>
@@ -475,11 +515,15 @@ function main()
         identify_effect |>
         calculate_statistics |>
         filter_statistics |>
+        assign_n |>
         select_cols |>
         static(write_output) |>
         static(print_header, "After processing")
 
-    @info "Program finished" time = get_time()
+    @info "Program finished" time=get_time()
+    
+    data = DataFrame(Type = ["initial SNPs", "final SNPs"], Count = [initial_snps, nrow(df)])
+    pretty_table(data, header = ["Type", "Count"], alignment = :r, noheader = true)    
 end
 
 main()

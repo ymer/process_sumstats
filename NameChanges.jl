@@ -53,6 +53,7 @@ replacements = Dict(
     "variant_id" => "Rsid",
     "snpid" => "Rsid",
     "rsnumbers" => "Rsid",
+    "rsnumber" => "Rsid",
     "alleles" => "Alleles",
     "allele1" => "A1",
     "allele2" => "A2",

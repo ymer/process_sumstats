@@ -29,19 +29,11 @@ end
 
 
 function print_header(df, title = "")
-    # Render the table first
     pretty_table(first(df, 4), header_crayon = crayon"yellow bold", title = title, show_omitted_cell_summary = true)
-
-    # Calculate the width needed for each column
     col_widths = [length(string(col)) for col in names(df)]
-
-    # Calculate the total width needed (sum of column widths + some extra for spacing)
     total_width = sum(col_widths) + length(names(df)) * 3
-
-    # Get the terminal width
     term_width = displaysize(stdout)[2]
 
-    # Check if the table will fit
     if total_width > term_width
         println("The table does not fit the screen. Column names are:")
         println(names(df))
@@ -76,6 +68,42 @@ function get_time()::Duration
     seconds = total_seconds % 60
 
     return Duration("$(minutes):$(lpad(seconds, 2, "0"))")
+end
+
+
+function get_time(t1)::Duration
+
+    total_seconds = round(Int, (now() - t1).value / 1000)
+
+    minutes = total_seconds ÷ 60
+    seconds = total_seconds % 60
+
+    return Duration("$(minutes):$(lpad(seconds, 2, "0"))")
+end
+
+
+macro log(msg, df)
+    return quote
+        formatted_snps = format(nrow($(esc(df))), commas=true)
+        @info $(esc(msg)) * "\n SNPs: " * formatted_snps
+    end
+end
+
+macro log(msg, df, t)
+    return quote
+        formatted_time = get_time($(esc(t)))
+        formatted_snps = format(nrow($(esc(df))), commas=true)
+        @info $(esc(msg)) * "\n SNPs: " * formatted_snps * "\n time: " * formatted_time
+    end
+end
+
+macro log(msg, fn, df, t)
+    return quote
+        local formatted_time = get_time($(esc(t)))
+        local formatted_snps = format(nrow($(esc(df))), commas=true)
+        local log_msg = $(esc(msg)) * "\n file: " * $(esc(fn)) * "\n SNPs in file: " * formatted_snps * "\n time: " * string(formatted_time)
+        @info log_msg
+    end
 end
 
 
