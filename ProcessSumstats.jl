@@ -255,7 +255,7 @@ function use_ref(df)
     @log "Reference read" fn snpid now()
 
     if args["pos-from-ref"]
-        df = :SNP in names(df) ? select(df, Not(:SNP)) : df
+        df = "SNP" in names(df) ? select(df, Not(:SNP)) : df
         merged = innerjoin(df, select(snpid, [:SNP, :Rsid]), on = :Rsid, matchmissing = :notequal)
         @log "SNP position changed to those from reference" merged
         return merged
@@ -426,7 +426,6 @@ function filter_statistics(df)
         if num_removed > 0
             @warn "Impossible p values detected." "SNPs removed" = num_removed SNPs = nrow(df)
             cols_to_select = intersect([:SNP, :Rsid, :P], propertynames(large_diff_df))
-            println("h4")
             selected_df = select(large_diff_df, cols_to_select)
             print_header(selected_df, "Invalid p-values")
         end
@@ -446,7 +445,6 @@ function assign_n(df)
         df.n = fill(n, size(df, 1))
     end
 
-    println("h3")
     df
 end
 
