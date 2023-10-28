@@ -63,6 +63,25 @@ function parse_commandline()
             help = "Assign an n value"
             default = -1
             arg_type = Int64
+        "--skip"
+            help = "Skip first n rows when reading the file"
+            default = -1
+            arg_type = Int64
+        "--no-error"
+            help = "Do not prompt an error is important columns are missing"
+            action = :store_true
+        "--effect_col"
+            help = "The name of the effect column (eg OR / beta) (if unusual)"
+            default = nothing
+            arg_type = String
+         "--p_col"
+            help = "The name of the p-value column (if unusual)"
+            default = nothing
+            arg_type = String
+         "--rsid_col"
+            help = "The name of the Rsid column (is unusual)"
+            default = nothing
+            arg_type = String
     end
 
     return parse_args(s)
@@ -71,8 +90,15 @@ end
 
 function read_sumstats(file_name::String)
     function rename_columns(df)
+
+        replacements2 = Dict{String, String}()
+        for (arg_key, replacement) in [("effect_col", "Effect"), ("p_col", "P"), ("rsid_col", "Rsid")]
+            args[arg_key] !== nothing && (replacements2[args[arg_key]] = replacement)
+        end
+        
         old_names = names(df)
-        new_names = [get(replacements, lowercase(string(name)), string(name)) for name in old_names]
+        new_names = [get(replacements2, string(name), get(replacements, lowercase(string(name)), string(name))) for name in old_names]
+        #new_names = [get(replacements, lowercase(string(name)), string(name)) for name in old_names]
         unique_new_names = Symbol[]
         seen = Dict{Symbol, Int}()
 
@@ -118,30 +144,38 @@ function read_sumstats(file_name::String)
         write(new_filename, contents)
         @info "Spaces converted to tabs"
     end
-     
+
     if args["convert-to-tabs"]
         new_filename = file_name * "_tabs"
         convert_spaces_to_tabs(file_name, new_filename)
         file_name = new_filename
     end
 
-    n = args["head"]
-    if n != -1
-        @info "Only first $n rows read from sumstats file"
-        df = CSV.File(file_name, limit = n, missingstring = ["NA", "N/A", "."]) |> DataFrame
-    else
-        if args["convert-to-dot"]
-            df = CSV.File(file_name, missingstring = ["NA", "N/A", ".", ""], decimal = ',') |> DataFrame
-        else
-            df = CSV.File(file_name, missingstring = ["NA", "N/A", ".", ""]) |> DataFrame
-        end
+    csv_args = Dict{String, Any}("missingstring" => ["NA", "N/A", "."])
+
+    head = args["head"]
+    if head != -1
+        csv_args["limit"] = head
+        @info "Only first $head rows read from sumstats file"
     end
 
-   
+    skip = args["skip"]
+    if skip != -1
+        csv_args["skipto"] = skip + 2
+        csv_args["header"] = skip + 1
+    end
+
+    if args["convert-to-dot"]
+        csv_args["decimal"] = ','
+    end
+
+    symbol_csv_args = Dict(Symbol(k)=>v for (k,v) in csv_args)
+    df = CSV.File(file_name; symbol_csv_args...) |> DataFrame
+
     if args["convert-to-dot"]
         for col in names(df)
             if any(x -> occursin(",", string(x)), df[!, col])
-                df[!, col] = parse.(Float64, replace.(string.(df[!, col]), "," => "."))
+                df[!, col] = map(x -> isempty(string(x)) ? missing : parse(Float64, replace(string(x), "," => ".")), df[!, col])
             end
         end
     end
@@ -159,7 +193,7 @@ function read_sumstats(file_name::String)
     end
     
     df = df |> rename_columns
-    
+
     numcols = [:Info, :P, :Effect, :Stderr]
     for col in intersect(numcols, names(df))
         if df[!, col] isa AbstractVector{<:AbstractString} && any(occursin(",", x) for x in df[!, col])
@@ -457,13 +491,19 @@ function select_cols(df)
             @warn "The following columns are missing from the input file: $missing_columns_str"
     end
 
-    required_cols = [[:Z], [:Direction, :Stat], [:Direction, :P]]
+    required_cols = [[:Z], [:Direction, :Beta], [:Direction, :OR], [:Direction, :P]]
 
     for (i, cols) in enumerate(required_cols)
         if all(x -> x in propertynames(df), cols)
             break
         elseif i == length(required_cols)
-            @warn "The file does not contain Z or Direction,Stat, or Direction,P"
+            msg ="The file does not contain Z or Direction,Stat, or Direction,P"
+            if args["no-error"]
+                @warn msg
+            else
+                @error msg
+                error(msg)
+            end 
         end
     end
 
@@ -480,7 +520,7 @@ end
 
 
 function create_logger(log_file)
-    file_logger = Logging.SimpleLogger(open(log_file, "a"))
+    file_logger = Logging.SimpleLogger(open(log_file, "w"))
     console_logger = Logging.ConsoleLogger(stderr)
     Logging.global_logger(LoggingExtras.TeeLogger(console_logger, file_logger))
     global start_time = Dates.now()
