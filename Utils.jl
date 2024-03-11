@@ -82,10 +82,17 @@ function get_time(t1)::Duration
 end
 
 
+macro log(msg)
+    return quote
+        @info $(esc(msg)) * "\n time: " * string(get_time())
+    end
+end
+
+
 macro log(msg, df)
     return quote
         formatted_snps = format(nrow($(esc(df))), commas=true)
-        @info $(esc(msg)) * "\n SNPs: " * formatted_snps
+        @info $(esc(msg)) * "\n SNPs: " * formatted_snps * "\n time: " * string(get_time())
     end
 end
 

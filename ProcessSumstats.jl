@@ -7,13 +7,13 @@ function parse_commandline()
     s = ArgParseSettings(
             description = "This program is used to process gwas sumstat files in various formats to a uniform format.",
             epilog = 
-        "The ID of a SNP can be in two formats, called 'SNP' and 'Rsid'. SNP is in the form of chr:position, while Rsid is a rs-number. Examples:\n
+        "The ID of a SNP can be in two formats, called 'SNP' and 'RSID'. SNP is in the form of chr:position, while RSID is a rs-number. Examples:\n
         'SNP': 10:157346\n
-        'Rsid': rs162373\n
+        'RSID': rs162373\n
         \n
-        A .bim file is a file in the plink .bim format. It has the following unlabelled columns: Chr, SNP/Rsid, GPos, Pos, A1, A2\n
+        A .bim file is a file in the plink .bim format. It has the following unlabelled columns: CHR, SNP/RSID, GPOS, POS, A1, A2\n
         \n
-        A .snpid file is a custom file format. It has the following labelled columns: SNP, Rsid, A1, A2."
+        A .snpid file is a custom file format. It has the following labelled columns: SNP, RSID, A1, A2."
        )
 
     @add_arg_table! s begin
@@ -43,7 +43,7 @@ function parse_commandline()
             help = "Check if the positions are the same as in the reference. (Requires --ref.)"
             action = :store_true
         "--pos-from-ref"
-            help = "Match on Rsid, and use the position from the reference instead. (Requires --ref.)"
+            help = "Match on RSID, and use the position from the reference instead. (Requires --ref.)"
             action = :store_true
         "--ref"
             help = "Path to a reference .bim file."
@@ -56,7 +56,7 @@ function parse_commandline()
         "--convert-to-tabs"
             help = "Convert spaces in file to tabs"
             action = :store_true
-        "--convert-to-dot"
+        "--convert-to-dots"
             help = "Convert commas in numerical columns to dots"
             action = :store_true
         "--assign-n"
@@ -74,15 +74,33 @@ function parse_commandline()
             help = "The name of the effect column (eg OR / beta) (if unusual)"
             default = nothing
             arg_type = String
+        "--a1_col"
+            help = "The name of the A1 column (if unusual)"
+            default = nothing
+            arg_type = String
+        "--a2_col"
+            help = "The name of the A2 column (if unusual)"
+            default = nothing
+            arg_type = String
+         "--se_col"
+            help = "The name of the SE column (if unusual)"
+            default = nothing
+            arg_type = String
          "--p_col"
             help = "The name of the p-value column (if unusual)"
             default = nothing
             arg_type = String
          "--rsid_col"
-            help = "The name of the Rsid column (is unusual)"
+            help = "The name of the RSID column (if unusual)"
             default = nothing
             arg_type = String
-    end
+         "--snp_col"
+            help = "The name of the SNP column (if unusual)"
+            default = nothing
+         "--rsid-as-snp"
+            help = "In the output file, have RSID in the column called SNP"
+            action = :store_true
+        end
 
     return parse_args(s)
 end
@@ -92,13 +110,13 @@ function read_sumstats(file_name::String)
     function rename_columns(df)
 
         replacements2 = Dict{String, String}()
-        for (arg_key, replacement) in [("effect_col", "Effect"), ("p_col", "P"), ("rsid_col", "Rsid")]
+        for (arg_key, replacement) in [("effect_col", "Effect"), ("p_col", "P"), ("rsid_col", "RSID"), ("a1_col", "A1"), ("a2_col", "A2"),
+                                       ("se_col", "SE"), ("snp_col", "SNP")]
             args[arg_key] !== nothing && (replacements2[args[arg_key]] = replacement)
         end
         
         old_names = names(df)
         new_names = [get(replacements2, string(name), get(replacements, lowercase(string(name)), string(name))) for name in old_names]
-        #new_names = [get(replacements, lowercase(string(name)), string(name)) for name in old_names]
         unique_new_names = Symbol[]
         seen = Dict{Symbol, Int}()
 
@@ -112,16 +130,16 @@ function read_sumstats(file_name::String)
         pairs = Pair.(old_names, unique_new_names)
         rename!(df, pairs)
 
-        if :Rsid ∈ df && :MarkerName ∈ df && :SNP ∉ df
+        if :RSID ∈ df && :MarkerName ∈ df && :SNP ∉ df
             rename!(df, :MarkerName => :SNP)
             @info "MarkerName renamed to SNP"
         end
 
-        if :Rsid ∉ df && :MarkerName ∈ df
+        if :RSID ∉ df && :MarkerName ∈ df
             first_value = df[1, :MarkerName]
             if first_value isa AbstractString && startswith(first_value, "rs")
-                rename!(df, :MarkerName => :Rsid)
-                @info "MarkerName renamed to Rsid"
+                rename!(df, :MarkerName => :RSID)
+                @info "MarkerName renamed to RSID"
             end
         end
 
@@ -139,11 +157,13 @@ function read_sumstats(file_name::String)
         else
             contents = read(file_name, String)
         end
-
-        contents = replace(contents, " " => "\t")
+        contents = replace(contents, r"[ \t]+" => "\t")
+        #contents = replace(contents, " " => "\t")
         write(new_filename, contents)
         @info "Spaces converted to tabs"
     end
+
+    t1 = now()
 
     if args["convert-to-tabs"]
         new_filename = file_name * "_tabs"
@@ -151,7 +171,7 @@ function read_sumstats(file_name::String)
         file_name = new_filename
     end
 
-    csv_args = Dict{String, Any}("missingstring" => ["NA", "N/A", "."])
+    csv_args = Dict{String, Any}("missingstring" => ["NA", "N/A", ".", ""])
 
     head = args["head"]
     if head != -1
@@ -165,14 +185,14 @@ function read_sumstats(file_name::String)
         csv_args["header"] = skip + 1
     end
 
-    if args["convert-to-dot"]
+    if args["convert-to-dots"]
         csv_args["decimal"] = ','
     end
 
     symbol_csv_args = Dict(Symbol(k)=>v for (k,v) in csv_args)
     df = CSV.File(file_name; symbol_csv_args...) |> DataFrame
 
-    if args["convert-to-dot"]
+    if args["convert-to-dots"]
         for col in names(df)
             if any(x -> occursin(",", string(x)), df[!, col])
                 df[!, col] = map(x -> isempty(string(x)) ? missing : parse(Float64, replace(string(x), "," => ".")), df[!, col])
@@ -191,8 +211,18 @@ function read_sumstats(file_name::String)
         convert_spaces_to_tabs(file_name, new_filename)
         df = read_sumstats(new_filename)
     end
-    
+   
     df = df |> rename_columns
+
+    function is_number(s)
+        try
+            parse(Float64, s)
+            true
+        catch
+            false
+        end
+    end
+
 
     numcols = [:Info, :P, :Effect, :Stderr]
     for col in intersect(numcols, names(df))
@@ -201,7 +231,7 @@ function read_sumstats(file_name::String)
         end
     end
 
-    @log "Sumstats read" file_name df now()
+    @log "Sumstats read" file_name df t1
     global initial_snps = nrow(df)
 
     df
@@ -226,15 +256,16 @@ function filter_info(df)
         return df
     end
 
-    invalid_df = filter(row -> row[:Info] < 0 || row[:Info] > 1.05, df)
+    invalid_df = filter(row -> row[:Info] < 0 || row[:Info] > 1.1, df)
     if nrow(invalid_df) > 0
-        @warn "$(nrow(invalid_df)) of rows with Info values outside the range [0, 1.05]"
-        print_sample(invalid_df, [:SNP, :Rsid, :Info], "Invalid Info values")
+        @warn "$(nrow(invalid_df)) of rows with Info values outside the range [0, 1.1]"
+        print_sample(invalid_df, [:SNP, :RSID, :Info], "Invalid Info values")
     end
 
     filter!(row -> row[:Info] >= info_min, df)
     @log "Remove SNPs with Info < $info_min." df
-
+    
+    check_snps_left(df)
     df
 end
 
@@ -242,11 +273,11 @@ end
 function create_SNP(df)
     args["pos-from-ref"] != "" && return df
     if :SNP ∉ df
-        if :Chr in df && :Pos in df
-            df = transform(df, [:Chr, :Pos] => ByRow((Chr, Pos) -> "$Chr:$Pos") => :SNP)
-            @info "SNP column created from Chr and Pos"
+        if :CHR in df && :POS in df
+            df = transform(df, [:CHR, :POS] => ByRow((Chr, POS) -> "$Chr:$POS") => :SNP)
+            @info "SNP column created from CHR and POS"
         else
-            @warn "SNP column not found. Neither is Chr + Pos"
+            @warn "SNP column not found. Neither is CHR + POS"
         end
     end
     df
@@ -258,20 +289,21 @@ function pos_from_snpid(df)
     fn == "" && return df
     
     snpid = CSV.File(fn) |> DataFrame
-    merged = innerjoin(df, snpid, on = [:Rsid, :A1, :A2])
+    merged = innerjoin(df, snpid, on = [:RSID, :A1, :A2])
 
     @log "SNP position acquired from reference. " * "Reference file = $fn" merged
     
+    check_snps_left(merged)
     merged
 end
 
 
 function read_bim(fn) 
-    bim = CSV.File(fn, header=["Chr", "Rsid", "GPos", "Pos", "A1", "A2"]) |> DataFrame
-    if all(occursin(":", x) for x in bim[1:5, "Rsid"])
-        rename!(bim, "Rsid" => "SNP")
+    bim = CSV.File(fn, header=["CHR", "RSID", "GPOS", "POS", "A1", "A2"]) |> DataFrame
+    if all(occursin(":", x) for x in bim[1:5, "RSID"])
+        rename!(bim, "RSID" => "SNP")
     else      
-        bim[!, "SNP"] = string.(bim[!, "Chr"]) .* ":" .* string.(bim[!, "Pos"])
+        bim[!, "SNP"] = string.(bim[!, "CHR"]) .* ":" .* string.(bim[!, "POS"])
     end
 
     bim
@@ -284,24 +316,26 @@ function use_ref(df)
         return df
     end
 
+    t1 = now()
     fn = args["ref"]
     snpid = read_bim(fn)
-    @log "Reference read" fn snpid now()
+    @log "Reference read"
 
     if args["pos-from-ref"]
         df = "SNP" in names(df) ? select(df, Not(:SNP)) : df
-        merged = innerjoin(df, select(snpid, [:SNP, :Rsid]), on = :Rsid, matchmissing = :notequal)
+        merged = innerjoin(df, select(snpid, [:SNP, :RSID]), on = :RSID, matchmissing = :notequal)
         @log "SNP position changed to those from reference" merged
+        check_snps_left(merged)
         return merged
     end
 
-    @assert :Rsid ∈ df "Rsid must be in dataframe to check with reference."
+    @assert :RSID ∈ df "RSID must be in dataframe to check with reference."
     @assert :SNP ∈ df "SNP must be in dataframe to check with reference."
 
     rename!(snpid, :SNP => :SNP_ref)
 
     original_size = size(df, 1)
-    merged = innerjoin(df, select(snpid, [:SNP_ref, :Rsid]), on = :Rsid, matchmissing = :notequal)
+    merged = innerjoin(df, select(snpid, [:SNP_ref, :RSID]), on = :RSID, matchmissing = :notequal)
     new_size = size(merged, 1)
    
     @info "Build check" "SNPs found in reference" = Percent(new_size / original_size)
@@ -309,7 +343,7 @@ function use_ref(df)
     not_equal_df = merged[merged.SNP .!= merged.SNP_ref, :]
     if nrow(not_equal_df) > 0
         @warn "Not all SNP positions matched with reference" "SNPs not matched" = nrow(not_equal_df)
-        cols_to_select = intersect([:SNP, :SNP_ref, :Rsid], propertynames(not_equal_df))
+        cols_to_select = intersect([:SNP, :SNP_ref, :RSID], propertynames(not_equal_df))
         selected_df = select(not_equal_df, cols_to_select)
         print_header(selected_df, "SNPs not matching reference")
     else
@@ -324,7 +358,7 @@ function filter_ids(df)
     args["filter"] == "" && return df
 
     for fn in split(args["filter"], ',')
-        t = time()
+        t = now()
         ext = splitext(fn)[2]
         if ext == ".bim"
             filter = read_bim(fn)
@@ -335,12 +369,13 @@ function filter_ids(df)
             return df
         end
 
-        @log "Filter list read" fn filter now()
+        @log "Filter list read" fn filter t
 
         df = innerjoin(df, select(filter, [:SNP, :A1, :A2]), on = [:SNP, :A1, :A2])
         @log "Perform filtering" df
     end
     
+    check_snps_left(df)
     df
 end
 
@@ -373,14 +408,16 @@ function filter_alleles(df)
         @log "Removing non-biallelic SNPs" df
     end
 
+    check_snps_left(df)
     df  
 end
 
 
 function remove_duplicates(df)
-    :Rsid in df && unique!(df, :Rsid)
+    :RSID in df && unique!(df, :RSID)
     :SNP in df && unique!(df, :SNP)
     @log "Removing duplicate markers" df
+    check_snps_left(df)
     df
 end
 
@@ -388,7 +425,14 @@ end
 function identify_effect(df)
     if :Effect ∉ df
         if :Z in df
-            @info "No Effect column, but Z is present"
+            if :P in df 
+                if :SE ∉ df
+                    @info "Calculate SE from P and Z"
+                    df.SE = abs.(df.Z) ./ sqrt.(-2 * log.(df.P))
+                    @info "Calculate BETA from SE and Z"
+                    df.BETA = df.Z .* df.SE
+                end
+            end
         else
             @warn "Neither effect nor Z found"
         end
@@ -397,22 +441,22 @@ function identify_effect(df)
 
     m = median(df.Effect)
     if abs(m) < 0.3
-        rename!(df, :Effect => :Beta)
-        @info "Effect is Beta"
+        rename!(df, :Effect => :BETA)
+        @info "Effect is BETA"
     elseif m > 0.7 && m < 1.3
         rename!(df, :Effect => :OR)
-        df.Beta = log.(df.OR)
-        @info "Effect is OR. Beta calculated."
+        df.BETA = log.(df.OR)
+        @info "Effect is OR. BETA calculated."
     else
         error("Effect column has unusual values. Check data.")
     end
     
-    if :Stderr ∈ df
-        df.Z = df.Beta ./ df.Stderr
-        @info "Z calculated from Beta and Stderr"
+    if :SE ∈ df
+        df.Z = df.BETA ./ df.SE
+        @info "Z calculated from BETA and Standard error"
     else
-        df.Direction = ifelse.(df.Beta .> 0, 1, -1)
-        @warn "As Stderr is missing, Z can not be calculated. Direction calculated from Beta."
+        df.Direction = ifelse.(df.BETA .> 0, 1, -1)
+        @warn "As Standard error is missing, Z can not be calculated. Direction calculated from BETA."
     end
 
     df
@@ -420,31 +464,37 @@ end
 
 
 function drop_missing(df)
-    cols_to_check = Symbol.(intersect(string.([:SNP, :Rsid, :A1, :A2, :Effect]), string.(names(df))))
+    cols_to_check = Symbol.(intersect(string.([:SNP, :RSID, :A1, :A2, :Effect, :Z, :BETA]), string.(names(df))))
     df = dropmissing(df, cols_to_check)
     @log "Drop rows with missing values" df
+    check_snps_left(df)
     df
 end
 
 
 function calculate_statistics(df)
-    if :NeglogP in propertynames(df) && !(:P in propertynames(df))
+    if :NeglogP ∈ df && :P ∉ df
         df = transform(df, :NeglogP => (x -> 10 .^ -x) => :P)
         @info "P calculated from NeglogP."
     end
-    
-    if :ndiv2 ∈ df && :n ∉ df
-        df.n = df.ndiv2 .* 2
+
+    #if :P ∈ df && :Z ∉ df
+    #    df.Z = [quantile(Normal(), 1 - p / 2) for p in df.P]
+    #    @info "Z calculated from P"
+    #end
+
+    if :ndiv2 ∈ df && :N ∉ df
+        df.N = df.ndiv2 .* 2
         @info "N calculated from ndiv2"
     end
 
-    if :n ∉ df && :neff ∈ df
-        rename!(df, :neff => :n)
+    if :N ∉ df && :neff ∈ df
+        rename!(df, :neff => :N)
         @info "neff used for n"
     end
 
-    if :n ∉ df && :nmax ∈ df
-        rename!(df, :nmax => :n)
+    if :N ∉ df && :nmax ∈ df
+        rename!(df, :nmax => :N)
         @info "nmax used for n"
     end
 
@@ -459,7 +509,7 @@ function filter_statistics(df)
         num_removed = original_size - nrow(df)
         if num_removed > 0
             @warn "Impossible p values detected." "SNPs removed" = num_removed SNPs = nrow(df)
-            cols_to_select = intersect([:SNP, :Rsid, :P], propertynames(large_diff_df))
+            cols_to_select = intersect([:SNP, :RSID, :P], propertynames(large_diff_df))
             selected_df = select(large_diff_df, cols_to_select)
             print_header(selected_df, "Invalid p-values")
         end
@@ -469,14 +519,21 @@ function filter_statistics(df)
 end
 
 
+function check_snps_left(df)
+    if nrow(df) < 1000
+        error("Fewer than 1000 SNPs remaining")
+    end
+end
+
+
 function assign_n(df)
     n = args["assign-n"]
     if n != -1
-        if :n in df
-            @warn "assign-n selected, but n is already present. Ignored"
+        if :N in df
+            @warn "assign-n selected, but N is already present. Ignored"
             return df
         end
-        df.n = fill(n, size(df, 1))
+        df.N = fill(n, size(df, 1))
     end
 
     df
@@ -484,14 +541,14 @@ end
 
 
 function select_cols(df)
-    missing_columns = setdiff([:SNP, :n, :A1, :A2], propertynames(df))
+    missing_columns = setdiff([:SNP, :N, :A1, :A2], propertynames(df))
 
     if !isempty(missing_columns)
         missing_columns_str = join(missing_columns, ", ")
             @warn "The following columns are missing from the input file: $missing_columns_str"
     end
 
-    required_cols = [[:Z], [:Direction, :Beta], [:Direction, :OR], [:Direction, :P]]
+    required_cols = [[:Z], [:Direction, :BETA], [:Direction, :OR], [:Direction, :P]]
 
     for (i, cols) in enumerate(required_cols)
         if all(x -> x in propertynames(df), cols)
@@ -507,15 +564,21 @@ function select_cols(df)
         end
     end
 
-    select(df, intersect([:SNP, :SNP_ref, :Rsid, :A1, :A2, :Stat, :P, :OR, :Beta, :Z, :Direction, :n], propertynames(df)))
+    df = select(df, intersect([:SNP, :SNP_ref, :RSID, :CHR, :POS, :A1, :A2, :Stat, :P, :OR, :BETA, :SE, :Z, :Direction, :N], propertynames(df)))
+    if args["rsid-as-snp"]
+        select!(df, Not(:SNP))
+        rename!(df, :RSID => :SNP)
+    end
+    df
 end
 
 
 function write_output(df)
-    args["write-snpid"] && CSV.write(args["out"] * ".snpid", df[:, [:SNP, :Rsid, :A1, :A2]], delim = "\t")
+    args["write-snpid"] && CSV.write(args["out"] * ".snpid", df[:, [:SNP, :RSID, :A1, :A2]], delim = "\t")
+    t1 = now()
     CSV.write(args["out"]  * ".sumstats", df, delim = "\t")
 
-    @info "Write formatted sumstat file"
+    @log "Write formatted sumstat file"
 end
 
 
@@ -542,6 +605,7 @@ function main()
     df = read_sumstats(args["in"]) |>
         static(print_header, "Original data") |>
         static(check_data_types) |>
+        drop_missing |>
         filter_info |>
         create_SNP |>
         use_ref |>
@@ -549,7 +613,6 @@ function main()
         filter_alleles |>
         filter_ids |>
         remove_duplicates |>
-        drop_missing |>
         identify_effect |>
         calculate_statistics |>
         filter_statistics |>
