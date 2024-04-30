@@ -17,11 +17,11 @@ function parse_commandline()
        )
 
     @add_arg_table! s begin
-        "--in"
+        "in"
             help = "Input sumstats filename"
             arg_type = String
             required = true
-        "--out"
+        "out"
             help = "Output filename"
             arg_type = String 
             required = true
@@ -96,6 +96,9 @@ function parse_commandline()
             arg_type = String
          "--snp_col"
             help = "The name of the SNP column (if unusual)"
+            default = nothing         
+         "--n_col"
+            help = "The name of the N column (if unusual)"
             default = nothing
          "--rsid-as-snp"
             help = "In the output file, have RSID in the column called SNP"
@@ -110,8 +113,7 @@ function read_sumstats(file_name::String)
     function rename_columns(df)
 
         replacements2 = Dict{String, String}()
-        for (arg_key, replacement) in [("effect_col", "Effect"), ("p_col", "P"), ("rsid_col", "RSID"), ("a1_col", "A1"), ("a2_col", "A2"),
-                                       ("se_col", "SE"), ("snp_col", "SNP")]
+        for (arg_key, replacement) in [("effect_col", "Effect"), ("p_col", "P"), ("rsid_col", "RSID"), ("a1_col", "A1"), ("a2_col", "A2"), ("se_col", "SE"), ("snp_col", "SNP"), ("n_col", "N")]
             args[arg_key] !== nothing && (replacements2[args[arg_key]] = replacement)
         end
         
@@ -171,7 +173,8 @@ function read_sumstats(file_name::String)
         file_name = new_filename
     end
 
-    csv_args = Dict{String, Any}("missingstring" => ["NA", "N/A", ".", ""])
+    csv_args = Dict{String, Any}("missingstring" => ["NA", "N/A", ".", ""], "comment" => "#")
+
 
     head = args["head"]
     if head != -1
@@ -271,7 +274,7 @@ end
 
 
 function create_SNP(df)
-    args["pos-from-ref"] != "" && return df
+    args["pos-from-ref"] && return df
     if :SNP ∉ df
         if :CHR in df && :POS in df
             df = transform(df, [:CHR, :POS] => ByRow((Chr, POS) -> "$Chr:$POS") => :SNP)
@@ -319,6 +322,8 @@ function use_ref(df)
     t1 = now()
     fn = args["ref"]
     snpid = read_bim(fn)
+    print_header(snpid)
+    print_header(df)
     @log "Reference read"
 
     if args["pos-from-ref"]

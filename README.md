@@ -1,10 +1,14 @@
 This program reads sumstat files in various formats, and outputs a uniform format.
 
-- install julia, such as with conda install -c conda-forge julia; conda activate julia
+- install julia: 'conda install -c conda-forge julia; conda activate julia'
 
-- julia julia_install.jl # To install the necessary packages
+- Download the repository: 'git clone https://github.com/ymer/process_sumstats' 
 
-- julia ProcessSumstats.jl --help # See how to run the program
+- Install Julia packages: 'julia julia_install.jl'
+
+- See how to run the program: 'julia ProcessSumstats.jl'
+
+- Run with basic settings: 'julia ProcessSumstats.jl [inputfile] [outputfile]'
 
 Columns in output:
 
