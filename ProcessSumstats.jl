@@ -445,12 +445,23 @@ function identify_effect(df)
     end
 
     m = median(df.Effect)
+    
     if abs(m) < 0.3
         rename!(df, :Effect => :BETA)
         @info "Effect is BETA"
+    
     elseif m > 0.7 && m < 1.3
         rename!(df, :Effect => :OR)
-        df.BETA = log.(df.OR)
+        if "Direction" in names(df) 
+            if Set(df.Direction) == Set([-1, 1])
+                df.BETA = log.(df.OR) .* df.Direction * -1
+            else
+                @warn "Uninterpretable direction"
+                df.BETA = log.(df.OR)
+            end
+        else
+            df.BETA = log.(df.OR)
+        end
         @info "Effect is OR. BETA calculated."
     else
         error("Effect column has unusual values. Check data.")
@@ -460,8 +471,11 @@ function identify_effect(df)
         df.Z = df.BETA ./ df.SE
         @info "Z calculated from BETA and Standard error"
     else
-        df.Direction = ifelse.(df.BETA .> 0, 1, -1)
-        @warn "As Standard error is missing, Z can not be calculated. Direction calculated from BETA."
+        @warn "As Standard error is missing, Z can not be calculated."
+        if !(:Direction in df)
+            df.Direction = ifelse.(df.BETA .> 0, 1, -1)
+            @info "Direction calculated from BETA"
+        end
     end
 
     df
