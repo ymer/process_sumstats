@@ -643,7 +643,7 @@ function main()
     @info "Program finished" time=get_time()
     
     data = DataFrame(Type = ["initial SNPs", "final SNPs"], Count = [initial_snps, nrow(df)])
-    pretty_table(data, header = ["Type", "Count"], alignment = :r, noheader = true)    
+    pretty_table(data, header = ["Type", "Count"], alignment = :r, show_header = false)    
 end
 
 main()
