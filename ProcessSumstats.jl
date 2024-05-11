@@ -413,6 +413,10 @@ function filter_alleles(df)
         @log "Removing non-biallelic SNPs" df
     end
 
+    initial_row_count = size(df, 1)
+    filter!(row -> row[:A1] != row[:A2], df)
+    size(df, 1) < initial_row_count && @log "Removing equal allele pairs" df
+
     check_snps_left(df)
     df  
 end
